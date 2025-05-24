@@ -88,7 +88,154 @@ int startWebServer(serverenv *env) {
     std::size_t pos = std::string(query).find("?");
     std::string uri = std::string(query).substr(0, pos);
 
-    if (std::string(uri).compare("/login/signin") == 0) {
+    if (std::string(uri).compare("/download/list/coordinators") == 0) {
+	PGresult* res = NULL;
+	const char* query = "SELECT pubkey FROM coordinators_nodes WHERE pubkey IS NOT NULL;";
+	res = PQexec(env->conn, query);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+	    std::cout << "Can't select from db" << std::endl;
+	}
+	int nrows = PQntuples(res);
+	std::string resp = "{ \"keys\": [ ";
+	for (int i=0; i<nrows; i++) {
+	    char* pubkey = PQgetvalue(res, i, 0);
+	    if (resp.length() == std::string("{ \"keys\": [ ").length()) {
+		std::string publicKey(pubkey);
+		publicKey = std::regex_replace(publicKey, std::regex("\n"), "\\n");
+		resp.append(" \"" + publicKey +  "\" ");
+	    } else {
+		std::string publicKey(pubkey);
+		publicKey = std::regex_replace(publicKey, std::regex("\n"), "\\n");
+		resp.append(", \"" + publicKey +  "\" ");
+	    }
+	}
+	resp.append("]}");
+	evhttp_add_header(req->output_headers, "Content-Type", "application/json");
+	evbuffer_add_printf(OutBuf, "%s", resp.c_str());
+	evhttp_send_reply(req, HTTP_OK, "", OutBuf);
+    } else if (std::string(uri).compare("/coordinator/login/pubkey") == 0) {
+	/*
+        {
+            "sendpubkey": {
+                "userid": userid,
+                "token": token,
+                "pubkey": pubkey,
+            }
+        }
+	*/
+	struct evbuffer* buf = evhttp_request_get_input_buffer(req);
+	size_t len = evbuffer_get_length(buf);
+	char* data = (char*)malloc(len + 1);
+	bzero(data, len+1);
+	evbuffer_copyout(buf, data, len);
+	json responseJson = json::parse(std::string(data));
+	json object = responseJson["sendpubkey"];
+	std::string coordinatorid = object["coordinatorid"];
+	std::string token = object["token"];
+	std::string pubkey = object["pubkey"];
+
+	PGresult* res = NULL;
+	const char* query = "SELECT * FROM coordinators_nodes WHERE id=$1 AND token=$2;";
+	const char* qparams[2];
+	qparams[0] = coordinatorid.c_str();
+	qparams[1] = token.c_str();
+	std::cout << "Query next: " << query << " with params " << coordinatorid << " <> " << token << std::endl;
+	res = PQexecParams(env->conn, query, 2, NULL, qparams, NULL, NULL, 0);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+	    std::cout << "Can't select from db" << std::endl;
+	}
+	int nrows = PQntuples(res);
+	if (nrows == 1) {
+	    const char* update = "UPDATE coordinators_nodes SET pubkey=$3 WHERE id=$1 AND token=$2";
+	    const char* uparams[3];
+	    uparams[0] = coordinatorid.c_str();
+	    uparams[1] = token.c_str();
+	    uparams[2] = pubkey.c_str();
+	
+	    res = PQexecParams(env->conn, update, 3, NULL, uparams, NULL, NULL, 0);
+	    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+	        std::string html = ("{ \"status\":\"fail\" }");
+	        evhttp_add_header(req->output_headers, "Content-Type", "application/json");
+	        evbuffer_add_printf(OutBuf, "%s", html.c_str());
+	        evhttp_send_reply(req, HTTP_OK, "", OutBuf);
+	    } else {
+	        std::string html = ("{ \"status\":\"ok\" }");
+	        evhttp_add_header(req->output_headers, "Content-Type", "application/json");
+	        evbuffer_add_printf(OutBuf, "%s", html.c_str());
+	        evhttp_send_reply(req, HTTP_OK, "", OutBuf);
+	    }
+	} else {
+	    std::string html = ("{ \"status\":\"token not found\" }");
+	    evhttp_add_header(req->output_headers, "Content-Type", "application/json");
+	    evbuffer_add_printf(OutBuf, "%s", html.c_str());
+	    evhttp_send_reply(req, HTTP_OK, "", OutBuf);
+	}
+	free(data);
+
+    } else if (std::string(uri).compare("/coordinator/login/signin") == 0) {
+	//GET parametes: login, password
+        std::string params = std::string(query).substr(pos+1);
+        std::map<std::string, std::string> paramsMap = parseParams(params);
+
+	if ((paramsMap.find("login") == paramsMap.end()) ||
+	    (paramsMap.find("password") == paramsMap.end())) {
+	    std::string html = "Bad request (required params: login, password)";
+            evbuffer_add_printf(OutBuf, "%s", html.c_str());
+            evhttp_send_reply(req, 400, "", OutBuf);
+	    return;
+	}
+
+	PGresult* res = NULL;
+	const char* query = "SELECT * FROM coordinators_users WHERE login=$1 AND password_hash=$2;";
+	const char* qparams[2];
+	qparams[0] = paramsMap["login"].c_str();
+	qparams[1] = paramsMap["password"].c_str();
+	std::cout << query << " with params " << paramsMap["login"] << " <> " << paramsMap["password"] << std::endl;
+	res = PQexecParams(env->conn, query, 2, NULL, qparams, NULL, NULL, 0);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+	    std::cout << "Can't select from db" << std::endl;
+	}
+	int ncols = PQnfields(res);
+	int nrows = PQntuples(res);
+	bool found=false;
+	unsigned long long userid = 0;
+	for(int i = 0; i < nrows; i++) {
+	    char* id = PQgetvalue(res, i, 0);
+	    char* login = PQgetvalue(res, i, 1);
+	    char* password = PQgetvalue(res, i, 2);
+	    found=true;
+	    userid = atoll(id);
+//	    html.append("Id: " + std::string(id) + "\n");
+	}
+	std::string html = "";
+	if ((found) && (userid > 0)) {
+	    const char* insert = "INSERT INTO coordinators_nodes (coordinators_users_id, token) VALUES ($1, $2)  RETURNING ID;";
+	    char* iparams[2];
+	    iparams[0] = (char*)std::to_string(userid).c_str();
+	    iparams[1] = (char*)malloc(250);
+	    bzero(iparams[1], 250);
+	    gen_random(iparams[1], 60);
+	    res = PQexecParams(env->conn, insert, 2, NULL, iparams, NULL, NULL, 0);
+	    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+		html.append("{ \"status\":\"fail\" }");
+	        evhttp_add_header(req->output_headers, "Content-Type", "application/json");
+	        evbuffer_add_printf(OutBuf, "%s", html.c_str());
+	        evhttp_send_reply(req, HTTP_OK, "", OutBuf);
+	    } else {
+		char* nodeid = PQgetvalue(res, 0, 0);
+		html.append("{ \"status\":\"ok\", \"token\":\"" +std::string(iparams[1])+ "\", \"coordinatorid\":\"" + std::string(nodeid) + "\" }");
+	        evhttp_add_header(req->output_headers, "Content-Type", "application/json");
+	        evbuffer_add_printf(OutBuf, "%s", html.c_str());
+	        evhttp_send_reply(req, HTTP_OK, "", OutBuf);
+	    }
+	} else {
+	    html.append("{ \"status\":\"not login\" }");
+	    evhttp_add_header(req->output_headers, "Content-Type", "application/json");
+	    evbuffer_add_printf(OutBuf, "%s", html.c_str());
+	    evhttp_send_reply(req, HTTP_OK, "", OutBuf);
+	}
+
+    } else if (std::string(uri).compare("/login/signin") == 0) {
 	//GET parametes: login, password
 
         std::string params = std::string(query).substr(pos+1);
@@ -101,11 +248,6 @@ int startWebServer(serverenv *env) {
             evhttp_send_reply(req, 400, "", OutBuf);
 	    return;
 	}
-
-//        std::string html = "Hello on /login/signin!\n\nlogin=";
-//	html.append(paramsMap["login"]);
-//	html.append("\n\npassword=");
-//	html.append(paramsMap["password"] + "\n\n");
 	
 	PGresult* res = NULL;
 	const char* query = "SELECT * FROM users WHERE login=$1 AND password_hash=$2;";
@@ -194,8 +336,8 @@ int startWebServer(serverenv *env) {
 	    const char* uparams[3];
 	    uparams[0] = userid.c_str();
 	    uparams[1] = token.c_str();
-	    uparams[1] = pubkey.c_str();
-
+	    uparams[2] = pubkey.c_str();
+	
 	    res = PQexecParams(env->conn, update, 3, NULL, uparams, NULL, NULL, 0);
 	    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
 	        std::string html = ("{ \"status\":\"fail\" }");
