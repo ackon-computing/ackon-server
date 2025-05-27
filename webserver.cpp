@@ -88,9 +88,20 @@ int startWebServer(serverenv *env) {
     std::size_t pos = std::string(query).find("?");
     std::string uri = std::string(query).substr(0, pos);
 
-    if (std::string(uri).compare("/download/list/coordinators") == 0) {
+    if (std::string(uri).compare("/download/list/servers") == 0) {
+	std::string resp = "{ \"keys\": [ ";
+        std::ifstream t("var/public.pem");
+        std::string publicKey((std::istreambuf_iterator<char>(t)),
+             std::istreambuf_iterator<char>());
+	publicKey = std::regex_replace(publicKey, std::regex("\n"), "\\n");
+	resp.append(" \"" + publicKey +  "\" ");
+	resp.append("]}");
+	evhttp_add_header(req->output_headers, "Content-Type", "application/json");
+	evbuffer_add_printf(OutBuf, "%s", resp.c_str());
+	evhttp_send_reply(req, HTTP_OK, "", OutBuf);
+    } else if (std::string(uri).compare("/download/list/coordinators") == 0) {
 	PGresult* res = NULL;
-	const char* query = "SELECT pubkey FROM coordinators_nodes WHERE pubkey IS NOT NULL;";
+	const char* query = "SELECT pubkey, address_ipv4 FROM coordinators_nodes WHERE pubkey IS NOT NULL AND address_ipv4 IS NOT NULL;";
 	res = PQexec(env->conn, query);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK) {
 	    std::cout << "Can't select from db" << std::endl;
@@ -109,7 +120,18 @@ int startWebServer(serverenv *env) {
 		resp.append(", \"" + publicKey +  "\" ");
 	    }
 	}
+	resp.append("], \"addresses\": [");
+	size_t len = resp.length();
+	for (int i=0; i<nrows; i++) {
+	    char* addr = PQgetvalue(res, i, 1);
+	    if (resp.length() == len) {
+		resp.append(" \""+ std::string(addr) +"\"");
+	    } else {
+		resp.append(", \""+ std::string(addr) +"\"");
+	    }
+	}
 	resp.append("]}");
+	
 	evhttp_add_header(req->output_headers, "Content-Type", "application/json");
 	evbuffer_add_printf(OutBuf, "%s", resp.c_str());
 	evhttp_send_reply(req, HTTP_OK, "", OutBuf);
@@ -209,13 +231,14 @@ int startWebServer(serverenv *env) {
 	}
 	std::string html = "";
 	if ((found) && (userid > 0)) {
-	    const char* insert = "INSERT INTO coordinators_nodes (coordinators_users_id, token) VALUES ($1, $2)  RETURNING ID;";
+	    const char* insert = "INSERT INTO coordinators_nodes (coordinators_users_id, token, address_ipv4) VALUES ($1, $2, $3)  RETURNING ID;";
 	    char* iparams[2];
 	    iparams[0] = (char*)std::to_string(userid).c_str();
 	    iparams[1] = (char*)malloc(250);
+	    iparams[2] = (char*)req->remote_host;
 	    bzero(iparams[1], 250);
 	    gen_random(iparams[1], 60);
-	    res = PQexecParams(env->conn, insert, 2, NULL, iparams, NULL, NULL, 0);
+	    res = PQexecParams(env->conn, insert, 3, NULL, iparams, NULL, NULL, 0);
 	    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
 		html.append("{ \"status\":\"fail\" }");
 	        evhttp_add_header(req->output_headers, "Content-Type", "application/json");
