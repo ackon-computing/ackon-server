@@ -7,6 +7,7 @@
 #include <cstring>
 #include <evhttp.h>
 #include <sstream>
+#include <ctime>
 
 #include "json.hpp"
 #include "webserver.hpp"
@@ -380,6 +381,59 @@ int startWebServer(serverenv *env) {
 	    evhttp_send_reply(req, HTTP_OK, "", OutBuf);
 	}
 	free(data);
+    } else if (std::string(uri).compare("/coordinator/report") == 0) {
+	struct evbuffer* buf = evhttp_request_get_input_buffer(req);
+	size_t len = evbuffer_get_length(buf);
+	char* data = (char*)malloc(len + 1);
+	bzero(data, len+1);
+	evbuffer_copyout(buf, data, len);
+	
+	//GET parametes: login, password
+	std::string params = std::string(query).substr(pos+1);
+	std::map<std::string, std::string> paramsMap = parseParams(params);
+
+	if ((paramsMap.find("coordinatorid") == paramsMap.end()) ||
+	    (paramsMap.find("token") == paramsMap.end())) {
+	    std::string html = "Bad request (required params: coordinatorid, token)";
+            evbuffer_add_printf(OutBuf, "%s", html.c_str());
+            evhttp_send_reply(req, 400, "", OutBuf);
+	    return;
+	}
+	//check 
+	PGresult* res = NULL;
+	const char* query = "SELECT * FROM coordinators_nodes WHERE id=$1 AND token=$2;";
+	const char* qparams[2];
+	qparams[0] = paramsMap["coordinatorid"].c_str();
+	qparams[1] = paramsMap["token"].c_str();
+	std::cout << query << " with params " << paramsMap["coordinatorid"] << " <> " << paramsMap["token"] << std::endl;
+	res = PQexecParams(env->conn, query, 2, NULL, qparams, NULL, NULL, 0);
+	if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+	    std::cout << "Can't select from db" << std::endl;
+	    std::string html = "Internal Error";
+            evbuffer_add_printf(OutBuf, "%s", html.c_str());
+            evhttp_send_reply(req, 500, "", OutBuf);
+	    return;
+	}
+	int nrows = PQntuples(res);
+	if (nrows != 1) {
+	    std::string html = "Bad auth";
+	    evbuffer_add_printf(OutBuf, "%s", html.c_str());
+	    evhttp_send_reply(req, 403, "", OutBuf);
+	    return;
+	}
+	
+	//buf is contents for tar.gz file
+	std::string fname = "./var/reports/" + std::to_string(std::time(0)) + "-" + paramsMap["coordinatorid"] + ".tar.gz";
+	std::ofstream out(fname, std::ios::out | std::ios::binary);
+	out.write(data, len);
+	out.close();
+//	out << contents << std::endl;
+//	out.close();
+	
+	std::string html = "{ \"state\": \"reported\" }";
+	evbuffer_add_printf(OutBuf, "%s", html.c_str());
+	evhttp_send_reply(req, 200, "", OutBuf);
+	return;
     } else if (std::string(uri).compare("/task/sign") == 0) {
 	//POST json:
 	/*

@@ -1,0 +1,35 @@
+#!/usr/bin/python3
+
+import time
+import re
+import yaml
+import json
+import sys
+import os
+import subprocess
+import tarfile
+import hashlib
+import base64
+import requests
+
+#
+from pprint import pprint
+
+
+def help():
+    print("ackon-server-tool (action)")
+    print("")
+    print(" ackon-server process-uploads")
+    print("")
+
+def processUploads():
+    print("process")
+
+if (len(sys.argv)) < 2:
+    help()
+elif sys.argv[1] == "help":
+    help()
+elif sys.argv[1] == "process-uploads":
+    processUploads()
+else:
+    help()
