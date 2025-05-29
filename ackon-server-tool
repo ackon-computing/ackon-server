@@ -11,6 +11,7 @@ import tarfile
 import hashlib
 import base64
 import requests
+import postgresql
 
 #
 from pprint import pprint
@@ -22,7 +23,69 @@ def help():
     print(" ackon-server process-uploads")
     print("")
 
+def checkRsa(rawtosign, sign, pubkey):
+    return True
+
+def checkCoordinatorSign(format):
+    rawtosign = (format["task"]["attached-files-hashes"]["Dockerfile"] + "\n" +
+                format["task"]["attached-files-hashes"]["upload.creds"] + "\n" +
+                format["task"]["attached-files-hashes"]["scaling.yaml"] + "\n" +
+                format["task"]["attached-files-hashes"]["duplication.yaml"] + "\n" +
+                format["task"]["attached-files-hashes"]["urls_list"]["hash"] + "\n" +
+                #for key, value in format["task"]["unsigned"]["attached-files-raw"]["others"]:
+                #    rawtosign = (rawtosign + value + "\n")
+                "mode=" + format["task"]["mode"] + "\n" +
+                "userid=" + str(format["task"]["user"]["userid"]) + "\n" +
+                "taskid=" + str(format["task"]["task-id"]) + "\n" +
+                "coordinatorid=" + str(format["task"]["coordinator"]["coordinatorid"]) + "\n" +
+                format["task"]["server-signature"] + "\n" +
+                format["task"]["coordinator-signature"] + "\n" +
+                "runnerid=" + str(format["task"]["runner"]["runnerid"]) + "\n" +
+                "n=" + str(format["task"]["unsigned"]["index"]["n"]) + "\n" +
+                "of=" + str(format["task"]["unsigned"]["index"]["of"]) + "\n" +
+                format["task"]["runner-signature"] + "\n");
+    sign = format["task"]["coordinator-status-signature"]
+    db = postgresql.open(user = 'ackon', password='ackon', database='ackon', unix='/run/postgresql/.s.PGSQL.5432')
+    get_pubkey = db.prepare("SELECT pubkey from coordinators_nodes WHERE id = $1")
+    pubkey = str(get_pubkey(int(format["task"]["coordinator"]["coordinatorid"]))[0][0])
+    db.close()
+    return checkRsa(rawtosign, sign, pubkey)
+
+def setApproveInDb(format):
+    db = postgresql.open(user = 'ackon', password='ackon', database='ackon', unix='/run/postgresql/.s.PGSQL.5432')
+    update_exec = db.prepare("UPDATE users_clients_locks SET runners_approvs = runners_approvs + 1 WHERE client_id = $1 AND id = $2")
+    update_exec(int(format["task"]["user"]["userid"]), int(format["task"]["task-id"]))
+    isfull = db.prepare("SELECT ptu_summ - runners_approvs FROM users_clients_locks WHERE client_id = $1 AND id = $2")
+    countright = int(str(isfull(int(format["task"]["user"]["userid"]), int(format["task"]["task-id"]))[0][0]))
+    if countright == 0:
+        deleteclosed = db.prepare("DELETE FROM users_clients_locks WHERE client_id = $1 AND id = $2")
+        deleteclosed(int(format["task"]["user"]["userid"]), int(format["task"]["task-id"]))
+    return True
+
 def processUploads():
+    file_count = sum(1 for item in os.scandir("./var/reports/") if item.is_file())
+    if file_count == 0:
+        print("Nothing to process. Exiting")
+        sys.exit(0)
+    if not os.path.isdir("./var/reports-tmp"):
+        os.mkdir("./var/reports-tmp")
+    for item in os.scandir("./var/reports/"):
+        if item.is_file():
+            os.rename("./var/reports/" + item.name, "./var/reports-tmp/report.tar.gz")
+            subprocess.Popen("cd ./var/reports-tmp; tar -zxvf report.tar.gz", shell=True, stdout=subprocess.PIPE).stdout.read()
+            for root, subdirs, files in os.walk("./var/reports-tmp/var/upload/"):
+                for file in files:
+                    with open("./var/reports-tmp/var/upload/" + file, "r") as raw:
+                        format = json.loads(raw.read())
+                        pprint(format)
+                        if checkCoordinatorSign(format):
+                            setApproveInDb(format)
+#                        else:
+#                            #bad sign in json
+                    os.remove("./var/reports-tmp/var/upload/" + file)
+            os.rmdir("./var/reports-tmp/var/upload")
+            os.rmdir("./var/reports-tmp/var")
+            os.remove("./var/reports-tmp/report.tar.gz")
     print("process")
 
 if (len(sys.argv)) < 2:
