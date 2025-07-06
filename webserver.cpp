@@ -488,9 +488,14 @@ int startWebServer(serverenv *env) {
 	char *taskid = PQgetvalue(res, 0, 0);
 	rawtosign.append("taskid=" + std::string(taskid) + "\n");
 	
+//	std::cout << "`" << rawtosign << "`" << std::endl;
+
 	std::string signd = std::regex_replace(sign(rawtosign), std::regex("\n"), "\\n");
+//	std::string signd = std::regex_replace(sign(rawtosign), std::regex("\n"), "");
+//	std::cout << signd << std::endl;
 //	std::string signd = sign(rawtosign)
 	std::string html = ("{ \"status\":\"ok\", \"task-id\":\"" + std::string(taskid) + "\", \"sign\":\""+signd+"\" }");
+//	std::cout << html << std::endl;
 	evhttp_add_header(req->output_headers, "Content-Type", "application/json");
 	evbuffer_add_printf(OutBuf, "%s", html.c_str());
 	evhttp_send_reply(req, HTTP_OK, "", OutBuf);
